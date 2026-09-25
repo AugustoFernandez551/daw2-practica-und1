@@ -1,0 +1,101 @@
+name: Evaluación automática - Unidad I
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluar:
+    name: Calificación automática
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      STUDENT_BRANCH: ${{ github.head_ref || github.ref_name }}
+
+    steps:
+      - name: Descargar entrega del estudiante
+        uses: actions/checkout@v4
+        with:
+          path: submission
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Descargar evaluador confiable desde la rama base
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: grader
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Preparar PHP y cliente MySQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y php-cli php-mysql mysql-client
+          php -v
+          php -m | grep -i pdo_mysql
+
+      - name: Esperar MySQL
+        run: |
+          for i in {1..30}; do
+            if mysqladmin ping -h 127.0.0.1 -u root --silent; then
+              echo "MySQL disponible."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL no respondió dentro del tiempo esperado."
+          exit 1
+
+      - name: Preparar base de datos de evaluación
+        run: |
+          mysql -h 127.0.0.1 -u root < grader/database/practica.sql
+          mysql -h 127.0.0.1 -u root -e "USE practica_daw2_und1; SHOW TABLES;"
+
+      - name: Verificar archivos protegidos
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          cd submission
+          CAMBIOS=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- \
+            config/Autoload.php dao/Conexion.php database/practica.sql tests .github || true)
+
+          if [ -n "$CAMBIOS" ]; then
+            echo "::warning::El estudiante modificó archivos protegidos:"
+            echo "$CAMBIOS"
+          else
+            echo "Archivos protegidos sin modificaciones."
+          fi
+
+      - name: Ejecutar evaluación automática
+        env:
+          RESULT_PATH: ${{ runner.temp }}/resultado.md
+        run: |
+          php grader/tests/evaluar.php submission
+
+      - name: Publicar resultado
+        if: always()
+        run: |
+          if [ -f "${{ runner.temp }}/resultado.md" ]; then
+            cat "${{ runner.temp }}/resultado.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## No se pudo generar la calificación automática" >> "$GITHUB_STEP_SUMMARY"
+          fi
