@@ -7,8 +7,10 @@ use PDO;
 class Equipo {
     private $conexion;
 
+    // EL CONSTRUCTOR DEBE QUEDAR ASÍ:
     public function __construct() {
-        $this->conexion = Conexion::getInstancia()->getConexion();
+        $conexionObj = new Conexion();
+        $this->conexion = $conexionObj->getConexion();
     }
 
     public function registrar(EquipoDTO $equipo) {
